@@ -1,4 +1,4 @@
-exports.version = 0.1
+exports.version = 1
 exports.apiRequired = 8.72 // httpStream.httpThrow
 exports.description = "HFS already works with a proxy (once configured), but this plugin adds the capability to ACT as a proxy server."
 exports.repo = "rejetto/reverse-proxy"
@@ -26,8 +26,9 @@ exports.init = api => ({
                 url = url.slice(0, -1)
             const dest = url + ctx.url.slice(path.length)
             try {
-                const parsed = require('url').parse(dest)
-                const req = await api.require('./misc').httpStream(dest, {
+                const parsed = api.require('url').parse(dest)
+                const forward = {
+                    url: dest,
                     method: ctx.method,
                     headers: {
                         ...ctx.headers,
@@ -39,7 +40,11 @@ exports.init = api => ({
                     body: ctx.req,
                     httpThrow: false,
                     rejectUnauthorized: false,
-                })
+                }
+                await Promise.all(api.customApiCall('reverseproxy_forward', { ctx, forward }))
+                const {url} = forward
+                forward.url = undefined // dont' delete, for performance reasons
+                const req = await api.require('./misc').httpStream(url, forward)
                 ctx.status = req.statusCode
                 ctx.set(req.headers)
                 ctx.body = req
