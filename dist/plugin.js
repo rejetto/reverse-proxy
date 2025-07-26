@@ -1,10 +1,11 @@
-exports.version = 1.1
+exports.version = 1.21
 exports.apiRequired = 8.72 // httpStream.httpThrow
 exports.description = "HFS already works with a proxy (once configured), but this plugin adds the capability to ACT as a proxy server."
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = "https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"
 exports.changelog = [
     { "version": 1.1, "message": "Better redirection support" },
+    { "version": 1.21, "message": "Match routes by host" },
 ]
 
 exports.config = {
@@ -12,6 +13,7 @@ exports.config = {
         type: 'array', defaultValue: [], width: { sm: 600 },
         fields: {
             path: { label: 'Source path', placeholder: '/website' },
+            host: { label: 'Source host', placeholder: "leave empty for any" },
             url: { label: 'Destination URL', placeholder: 'http://example.com' }
         }
     },
@@ -20,14 +22,15 @@ exports.config = {
 exports.init = api => ({
     async middleware(ctx) {
         for (const route of api.getConfig('routes')) {
-            let { path, url } = route
+            let { path='', host, url } = route
+            if (host && ctx.host !== host) continue
             if (!path.startsWith('/'))
                 path = '/' + path
             if (!ctx.url.startsWith(path)) continue
-            if (ctx.url.length !== path.length && ctx.url[path.length] !== '/') continue
+            if (path.length > 1 && ctx.url.length > path.length && ctx.url[path.length] !== '/') continue
             if (url.endsWith('/'))
                 url = url.slice(0, -1)
-            const dest = url + ctx.url.slice(path.length)
+            const dest = url + ctx.url.slice(path.length === 1 ? 0 :path.length)
             try {
                 const parsed = api.require('url').parse(dest)
                 const forward = {
