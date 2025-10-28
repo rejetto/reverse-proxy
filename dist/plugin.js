@@ -1,4 +1,4 @@
-exports.version = 2
+exports.version = 2.1
 exports.apiRequired = 12.7 // 'onServer' event
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
@@ -7,15 +7,17 @@ exports.changelog = [
     { "version": 1.1, "message": "Better redirection support" },
     { "version": 1.21, "message": "Match routes by host" },
     { "version": 2, "message": "Websocket support" },
+    { "version": 2.1, "message": "Allow reordering of rules" },
 ]
 
 exports.config = {
     routes: {
-        type: 'array', defaultValue: [], width: { sm: 600 },
+        helperText: "First rule matching applies (top to bottom)",
+        type: 'array', reorder: true, defaultValue: [], width: { xs: 'auto', sm: 600, md: 800 },
         fields: {
-            path: { label: 'Source path', placeholder: '/website' },
-            host: { label: 'Source host', placeholder: "leave empty for any" },
-            url: { label: 'Destination URL', placeholder: 'http://example.com' }
+            path: { label: 'Source path', $width: 1, placeholder: '/website', $mergeRender: { host: {} } },
+            host: { label: 'Source host', $width: 1, placeholder: "leave empty for any", $hideUnder: 'sm' },
+            url: { label: 'Destination URL', $width: 2, placeholder: 'http://example.com' }
         }
     },
 }
