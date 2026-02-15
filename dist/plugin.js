@@ -1,13 +1,14 @@
-exports.version = 2.1
+exports.version = 2.2
 exports.apiRequired = 12.7 // 'onServer' event
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
-    { "version": 1.1, "message": "Better redirection support" },
-    { "version": 1.21, "message": "Match routes by host" },
-    { "version": 2, "message": "Websocket support" },
+    { "version": 2.2, "message": "Option to validate upstream TLS certificates" },
     { "version": 2.1, "message": "Allow reordering of rules" },
+    { "version": 2, "message": "Websocket support" },
+    { "version": 1.21, "message": "Match routes by host" },
+    { "version": 1.1, "message": "Better redirection support" }
 ]
 
 exports.config = {
@@ -20,6 +21,7 @@ exports.config = {
             url: { label: 'Destination URL', $width: 2, placeholder: 'http://example.com' }
         }
     },
+    rejectUnauthorized: { type: 'boolean', defaultValue: false, label: "Validate upstream TLS certificates" },
 }
 
 exports.init = api => {
@@ -50,7 +52,7 @@ exports.init = api => {
                         },
                         body: ctx.req,
                         httpThrow: false,
-                        rejectUnauthorized: false,
+                        rejectUnauthorized: api.getConfig('rejectUnauthorized'),
                         noRedirect: true, // redirect must be handled differently
                     }
                     await Promise.all(api.customApiCall('reverseproxy_forward', { ctx, forward })) // allow plugins to interact
@@ -95,7 +97,7 @@ exports.init = api => {
                 const serverSocket = api.require(parsedUrl.protocol === 'https:' ? 'tls' : 'net').connect({
                     host: targetHost,
                     port: targetPort,
-                    rejectUnauthorized: false
+                    ...parsedUrl.protocol === 'https:' && { rejectUnauthorized: api.getConfig('rejectUnauthorized') }
                 })
                 serverSocket.on('connect', () => {
                     serverSocket.write(`${req.method} ${targetPath} HTTP/1.1\r\n${outgoingHeaders}\r\n\r\n`)
