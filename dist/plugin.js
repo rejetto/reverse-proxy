@@ -1,9 +1,10 @@
-exports.version = 2.2
+exports.version = 2.21
 exports.apiRequired = 12.7 // 'onServer' event
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 2.21, "message": "Handle upstream WebSocket connection errors" },
     { "version": 2.2, "message": "Option to validate upstream TLS certificates" },
     { "version": 2.1, "message": "Allow reordering of rules" },
     { "version": 2, "message": "Websocket support" },
@@ -116,6 +117,8 @@ exports.init = api => {
                     clientSocket.destroy()
                     serverSocket.destroy()
                 })
+                serverSocket.on('error', () => clientSocket.destroy())
+                clientSocket.on('error', () => serverSocket.destroy())
                 serverSocket.on('end', () => clientSocket.end())
                 serverSocket.on('close', () => clientSocket.end())
                 return
