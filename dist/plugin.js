@@ -78,12 +78,14 @@ exports.init = api => {
         server.on('upgrade', (req, clientSocket) => {
             const key = req.headers['sec-websocket-key']
             if (!key || req.headers.upgrade !== 'websocket' || !req.headers.connection?.includes('Upgrade')) return
+            const pathname = req.url.split('?')[0]
             for (const route of api.getConfig('routes')) {
                 let { path = '', host, url } = route
                 if (host && req.headers.host !== host) continue
                 if (!path.startsWith('/'))
                     path = '/' + path
-                if (!req.url.startsWith(path)) continue
+                if (!pathname.startsWith(path)) continue
+                if (!path.endsWith('/') && pathname.length > path.length && pathname[path.length] !== '/') continue
                 const parsedUrl = new URL(url)
                 const targetHost = parsedUrl.hostname
                 const targetPort = parseInt(parsedUrl.port) || parsedUrl.protocol === 'https:' && 443 || 80

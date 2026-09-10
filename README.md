@@ -21,3 +21,8 @@ exports.customApi =  {
     }
 }
 ```
+
+## Tests
+
+Run `HFS_DIR=/path/to/hfs node --test tests/*.test.js` with a built HFS checkout.
+The routing test starts an isolated HFS instance and a local HTTP/WebSocket upstream on loopback ports.
