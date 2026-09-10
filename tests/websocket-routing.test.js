@@ -19,11 +19,20 @@ test('HFS routes real WebSocket upgrades by complete path prefix', { timeout: 20
         sockets.add(socket)
         socket.on('close', () => sockets.delete(socket))
     })
+    const binaryFrame = Buffer.from([0x82, 5, 0, 128, 255, 195, 169])
     upstream.on('upgrade', (req, socket) => {
         const accept = createHash('sha1').update(req.headers['sec-websocket-key']
             + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64')
-        socket.end('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
-            + `Sec-WebSocket-Accept: ${accept}\r\nX-Upstream-Path: ${req.url}\r\n\r\n`)
+        const header = 'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+            + `Sec-WebSocket-Accept: ${accept}\r\nX-Upstream-Path: ${req.url}\r\n\r\n`
+        if (req.url.endsWith('/fragmented')) {
+            socket.write(header.slice(0, 8))
+            setTimeout(() => socket.end(Buffer.concat([Buffer.from(header.slice(8)), binaryFrame])), 30)
+        }
+        else if (req.url.endsWith('/binary'))
+            socket.end(Buffer.concat([Buffer.from(header), binaryFrame]))
+        else
+            socket.end(header)
     })
     upstream.listen(0, '127.0.0.1')
     await once(upstream, 'listening')
@@ -83,15 +92,28 @@ test('HFS routes real WebSocket upgrades by complete path prefix', { timeout: 20
         await t.test(path, async () => assert.equal(await upgrade(path), expected))
     }
 
-    function upgrade(path) {
+    for (const path of ['/chat/fragmented', '/chat/binary']) {
+        await t.test(path, async () => assert.deepEqual(await upgrade(path, true), binaryFrame))
+    }
+
+    function upgrade(path, readBody = false) {
         return new Promise((resolve, reject) => {
             const req = http.get(proxy + path, { headers: {
                 Connection: 'Upgrade', Upgrade: 'websocket',
                 'Sec-WebSocket-Key': randomBytes(16).toString('base64'), 'Sec-WebSocket-Version': '13',
             } })
-            req.on('upgrade', (res, socket) => {
-                socket.destroy()
-                resolve(res.headers['x-upstream-path'])
+            req.on('upgrade', (res, socket, head) => {
+                if (readBody) {
+                    const chunks = [head]
+                    socket.on('data', chunk => chunks.push(chunk))
+                    socket.on('end', () => resolve(Buffer.concat(chunks)))
+                    socket.on('error', reject)
+                    socket.setTimeout(3000, () => socket.destroy(Error('WebSocket data timed out')))
+                }
+                else {
+                    socket.destroy()
+                    resolve(res.headers['x-upstream-path'])
+                }
             })
             req.on('response', res => {
                 res.resume()

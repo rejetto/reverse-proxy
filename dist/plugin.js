@@ -105,16 +105,32 @@ exports.init = api => {
                 serverSocket.on('connect', () => {
                     serverSocket.write(`${req.method} ${targetPath} HTTP/1.1\r\n${outgoingHeaders}\r\n\r\n`)
                 })
-                serverSocket.on('data', data => {
-                    if (clientSocket.upgraded) return
-                    data = String(data)
-                    if (!data.includes('HTTP/1.1 101 Switching Protocols')) return // is this the initial response from the target server to the upgrade request
+                let response = Buffer.alloc(0)
+                serverSocket.on('data', handleHandshake)
+                function handleHandshake(data) {
+                    response = Buffer.concat([response, data])
+                    const end = response.indexOf('\r\n\r\n')
+                    // bound buffering while waiting for a complete upstream handshake
+                    if ((end < 0 ? response.length : end) > api.require('http').maxHeaderSize) {
+                        clientSocket.destroy()
+                        serverSocket.destroy()
+                        return
+                    }
+                    if (end < 0) return
+                    const header = response.subarray(0, end).toString('latin1')
+                    if (!/^HTTP\/1\.[01] 101 /.test(header)) {
+                        clientSocket.destroy()
+                        serverSocket.destroy()
+                        return
+                    }
+                    serverSocket.removeListener('data', handleHandshake)
                     const accept = api.require('crypto').createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64') // magic string (RFC 6455)
-                    data = data.replace(/^(Sec-WebSocket-Accept:\s+).+$/im, '$1' + accept)
-                    clientSocket.write(data)
-                    clientSocket.upgraded = true // Mark as upgraded
-                    clientSocket.pipe(serverSocket).pipe(clientSocket) // pipe data between client and server sockets
-                })
+                    clientSocket.write(header.replace(/^(Sec-WebSocket-Accept:\s+).+$/im, '$1' + accept) + '\r\n\r\n', 'latin1')
+                    // a frame can arrive with the headers and must retain its original bytes
+                    clientSocket.write(response.subarray(end + 4))
+                    clientSocket.upgraded = true
+                    clientSocket.pipe(serverSocket).pipe(clientSocket)
+                }
                 serverSocket.on('timeout', () => {
                     clientSocket.destroy()
                     serverSocket.destroy()
