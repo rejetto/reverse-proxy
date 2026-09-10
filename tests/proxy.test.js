@@ -10,10 +10,25 @@ const { setTimeout: delay } = require('node:timers/promises')
 const test = require('node:test')
 
 // run against a built HFS checkout: HFS_DIR=/path/to/hfs node --test tests/*.test.js
-test('HFS routes real WebSocket upgrades by complete path prefix', { timeout: 20000 }, async t => {
+test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
     const hfsDir = resolve(process.env.HFS_DIR || join(__dirname, '../../../hfs'))
     const cwd = await mkdtemp(join(tmpdir(), 'hfs-proxy-routing-'))
-    const upstream = http.createServer((req, res) => res.end(req.url))
+    const upstream = http.createServer(async (req, res) => {
+        const url = new URL(req.url, 'http://upstream')
+        if (url.pathname.endsWith('/redirect')) {
+            res.writeHead(Number(url.searchParams.get('status') || 302), {
+                location: url.searchParams.get('to'), 'set-cookie': 'redirect-test=1; Path=/',
+            })
+            res.end('redirect body')
+        }
+        else if (url.pathname.endsWith('/receive')) {
+            const chunks = []
+            for await (const chunk of req) chunks.push(chunk)
+            res.end(JSON.stringify({ method: req.method, body: Buffer.concat(chunks).toString() }))
+        }
+        else
+            res.end(req.url)
+    })
     const sockets = new Set()
     upstream.on('connection', socket => {
         sockets.add(socket)
@@ -59,6 +74,7 @@ test('HFS routes real WebSocket upgrades by complete path prefix', { timeout: 20
             } }
         }`,
         plugins_config: { 'reverse-proxy': { routes: [
+            { path: '/site', url: dest },
             { path: '/chat', host: 'other.test', url: dest + '/wrong-host' },
             { path: 'chat', url: dest + '/chat-root' },
             { path: '/chat-admin', url: dest + '/admin-root' },
@@ -121,6 +137,39 @@ test('HFS routes real WebSocket upgrades by complete path prefix', { timeout: 20
             await control('start_plugin')
             assert.equal((await probe()).count, initial.count)
             assert.equal(await upgrade('/chat/room'), '/chat-root/room')
+        }
+    })
+
+    await t.test('root-relative redirects preserve the mount, status and response', async () => {
+        for (const status of [301, 302, 303, 307, 308]) {
+            const response = await fetch(proxy + '/chat/redirect?' + new URLSearchParams({
+                status, to: '/chat-root/login?next=%2Fprivate#form',
+            }), { redirect: 'manual' })
+            assert.equal(response.status, status)
+            assert.equal(response.headers.get('location'), '/chat/login?next=%2Fprivate#form')
+            assert.match(response.headers.get('set-cookie'), /redirect-test=1/)
+            assert.equal(await response.text(), 'redirect body')
+        }
+        for (const [mount, to, expected] of [
+            ['/site', '/login', '/site/login'],
+            ['/chat', '/chat-root?token=example', '/chat?token=example'],
+            ['/chat', '/elsewhere', '/elsewhere'],
+            ['/chat', '/chat-root-admin/login', '/chat-root-admin/login'],
+            ['/chat', '//example.com/login', '//example.com/login'],
+            ['/chat', 'https://example.com/login', 'https://example.com/login'],
+            ['/chat', 'login', 'login'],
+        ]) {
+            const response = await fetch(proxy + mount + '/redirect?' + new URLSearchParams({ to }), { redirect: 'manual' })
+            assert.equal(response.headers.get('location'), expected)
+            await response.text()
+        }
+        const to = '/chat-root?token=example'
+        assert.equal(await fetch(proxy + '/chat/redirect?' + new URLSearchParams({ to })).then(r => r.text()), to)
+        for (const status of [307, 308]) {
+            const response = await fetch(proxy + '/chat/redirect?' + new URLSearchParams({
+                status, to: '/chat-root/receive',
+            }), { method: 'POST', body: 'message to preserve', headers: { 'content-type': 'text/plain' } })
+            assert.deepEqual(await response.json(), { method: 'POST', body: 'message to preserve' })
         }
     })
 

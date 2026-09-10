@@ -1,9 +1,10 @@
-exports.version = 2.21
+exports.version = 2.22
 exports.apiRequired = 12.7 // 'onServer' event
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 2.22, "message": "Fix WebSocket routing, fragmented handshakes and plugin reloads; preserve proxy paths and status in redirects" },
     { "version": 2.21, "message": "Handle upstream WebSocket connection errors" },
     { "version": 2.2, "message": "Option to validate upstream TLS certificates" },
     { "version": 2.1, "message": "Allow reordering of rules" },
@@ -26,6 +27,7 @@ exports.config = {
 }
 
 exports.init = async api => {
+    // TODO: delegate listener cleanup to api.onServer when apiRequired can be raised to 13.4
     const upgradeHandlers = new Map()
     await api.onServer(handleWebsockets)
     return {
@@ -41,8 +43,8 @@ exports.init = async api => {
                 if (host && ctx.host !== host) continue
                 if (!path.startsWith('/'))
                     path = '/' + path
-                if (!ctx.url.startsWith(path)) continue
-                if (path.length > 1 && ctx.url.length > path.length && ctx.url[path.length] !== '/') continue
+                if (!ctx.path.startsWith(path)) continue
+                if (path.length > 1 && ctx.path.length > path.length && ctx.path[path.length] !== '/') continue
                 if (url.endsWith('/'))
                     url = url.slice(0, -1)
                 const dest = url + ctx.url.slice(path.length === 1 ? 0 : path.length)
@@ -67,8 +69,17 @@ exports.init = async api => {
                     const { url } = forward
                     forward.url = undefined // dont' delete, for performance reasons
                     const req = await api.require('./misc').httpStream(url, forward)
-                    if (req.headers.location?.startsWith(url))
-                        return ctx.redirect(path + req.headers.location.slice(url.length))
+                    const location = req.headers.location
+                    if (location?.startsWith(url))
+                        req.headers.location = path + location.slice(url.length)
+                    else if (location?.startsWith('/') && !location.startsWith('//')) {
+                        const basePath = new URL(route.url).pathname.replace(/\/$/, '')
+                        const target = new URL(location, url)
+                        // only paths inside the upstream mount can be reached through this route
+                        if (target.pathname === basePath || target.pathname.startsWith(basePath + '/'))
+                            req.headers.location = (path.replace(/\/$/, '') + target.pathname.slice(basePath.length) || '/')
+                                + target.search + target.hash
+                    }
                     ctx.status = req.statusCode
                     ctx.set(req.headers)
                     ctx.body = req
