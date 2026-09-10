@@ -1,9 +1,10 @@
-exports.version = 2.22
+exports.version = 3
 exports.apiRequired = 12.7 // 'onServer' event
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 3, "message": "Add opt-in HTML URL rewriting for individual proxy routes" },
     { "version": 2.22, "message": "Fix WebSocket routing, fragmented handshakes and plugin reloads; preserve proxy paths and status in redirects" },
     { "version": 2.21, "message": "Handle upstream WebSocket connection errors" },
     { "version": 2.2, "message": "Option to validate upstream TLS certificates" },
@@ -20,7 +21,9 @@ exports.config = {
         fields: {
             path: { label: 'Source path', $width: 1, placeholder: '/website', $mergeRender: { host: {} } },
             host: { label: 'Source host', $width: 1, placeholder: "leave empty for any", $hideUnder: 'sm' },
-            url: { label: 'Destination URL', $width: 2, placeholder: 'http://example.com' }
+            url: { label: 'Destination URL', $width: 2, placeholder: 'http://example.com' },
+            rewriteHtml: { type: 'boolean', defaultValue: false, label: "Rewrite HTML URLs",
+                helperText: "Adapt root-relative HTML links to the source path. Does not rewrite JavaScript or CSS." }
         }
     },
     rejectUnauthorized: { type: 'boolean', defaultValue: false, label: "Validate upstream TLS certificates" },
@@ -65,6 +68,8 @@ exports.init = async api => {
                         rejectUnauthorized: api.getConfig('rejectUnauthorized'),
                         noRedirect: true, // redirect must be handled differently
                     }
+                    if (route.rewriteHtml)
+                        forward.headers['accept-encoding'] = 'identity'
                     await Promise.all(api.customApiCall('reverseproxy_forward', { ctx, forward })) // allow plugins to interact
                     const { url } = forward
                     forward.url = undefined // dont' delete, for performance reasons
@@ -80,9 +85,11 @@ exports.init = async api => {
                             req.headers.location = (path.replace(/\/$/, '') + target.pathname.slice(basePath.length) || '/')
                                 + target.search + target.hash
                     }
+                    const body = route.rewriteHtml && ctx.method !== 'HEAD'
+                        ? await require('./rewrite-html')(req, path, route.url) : req
                     ctx.status = req.statusCode
                     ctx.set(req.headers)
-                    ctx.body = req
+                    ctx.body = body
                 } catch (e) {
                     ctx.status = 502
                     ctx.body = String(e)

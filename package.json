@@ -1,0 +1,12 @@
+{
+  "name": "hfs-reverse-proxy",
+  "private": true,
+  "scripts": {
+    "build": "esbuild rewrite-html.js --bundle --platform=node --target=node18 --minify --outfile=dist/rewrite-html.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.0",
+    "parse5": "^7.3.0"
+  }
+}

@@ -2,7 +2,8 @@ const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const { createHash, randomBytes } = require('node:crypto')
 const { once } = require('node:events')
-const { mkdtemp, mkdir, copyFile, writeFile, appendFile, rm } = require('node:fs/promises')
+const { mkdtemp, mkdir, cp, writeFile, appendFile, rm } = require('node:fs/promises')
+const { gzipSync } = require('node:zlib')
 const http = require('node:http')
 const { tmpdir } = require('node:os')
 const { resolve, join } = require('node:path')
@@ -13,9 +14,40 @@ const test = require('node:test')
 test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
     const hfsDir = resolve(process.env.HFS_DIR || join(__dirname, '../../../hfs'))
     const cwd = await mkdtemp(join(tmpdir(), 'hfs-proxy-routing-'))
+    const html = '<!doctype html><meta charset="utf-8"><a href="/chat-root/login?a=1&amp;b=2">Caffè</a>'
+        + '<img src=/chat-root/image><script src="/chat-root/app.js"></script>'
+        + '<script>const untouched = \'<a href="/chat-root/private">\';</script>'
+        + '<!-- <img src="/chat-root/comment"> --><textarea><a href="/chat-root/text"></textarea>'
+        + '<a href="//example.com/external">external</a><a href="/other">other mount</a>'
+        + '<form action="/chat-root/receive"><button formaction="/chat-root/receive">Send</button></form>'
+        + '<a href="relative">relative</a><div data-value="/chat-root/data"></div>'
+        + '<a href="&#47;chat-root/entity">entity</a><a href="/chat-root/../outside">outside</a>'
+        + '<a href="/\t/[invalid">invalid URL</a>'
     const upstream = http.createServer(async (req, res) => {
         const url = new URL(req.url, 'http://upstream')
-        if (url.pathname.endsWith('/redirect')) {
+        if (url.pathname.endsWith('/html')) {
+            let body = Buffer.from(html)
+            res.setHeader('content-type', 'text/html; charset=utf-8')
+            res.setHeader('etag', '"original"')
+            res.setHeader('x-accepted-encoding', req.headers['accept-encoding'] || '')
+            const mode = url.searchParams.get('mode')
+            if (mode === 'large') body = Buffer.concat([body, Buffer.alloc(2 * 1024 * 1024, 32)])
+            if (mode === 'gzip') {
+                body = gzipSync(body)
+                res.setHeader('content-encoding', 'gzip')
+            }
+            if (mode === 'charset') res.setHeader('content-type', 'text/html; charset=iso-8859-1')
+            if (mode === 'json') res.setHeader('content-type', 'application/json')
+            if (mode === 'no-transform') res.setHeader('cache-control', 'no-transform')
+            if (mode === 'base') body = Buffer.from('<base href="https://example.com/">' + html)
+            if (mode === 'chunked') body = Buffer.from('<!doctype html><p>No URL to rewrite</p>')
+            if (mode === 'partial') res.statusCode = 206
+            if (!['large', 'chunked'].includes(mode)) res.setHeader('content-length', body.length)
+            // split attributes across chunks, and exercise overflow without Content-Length
+            res.write(body.subarray(0, 65))
+            res.end(body.subarray(65))
+        }
+        else if (url.pathname.endsWith('/redirect')) {
             res.writeHead(Number(url.searchParams.get('status') || 302), {
                 location: url.searchParams.get('to'), 'set-cookie': 'redirect-test=1; Path=/',
             })
@@ -57,7 +89,7 @@ test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
     })
     const dest = `http://127.0.0.1:${upstream.address().port}`
     await mkdir(join(cwd, 'plugins/reverse-proxy'), { recursive: true })
-    await copyFile(resolve(__dirname, '../dist/plugin.js'), join(cwd, 'plugins/reverse-proxy/plugin.js'))
+    await cp(resolve(__dirname, '../dist'), join(cwd, 'plugins/reverse-proxy'), { recursive: true })
     await writeFile(join(cwd, 'config.yaml'), JSON.stringify({
         port: 0, listen_interface: '127.0.0.1', https_port: -1,
         open_browser_at_start: false, log: '', error_log: '',
@@ -75,6 +107,7 @@ test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
         }`,
         plugins_config: { 'reverse-proxy': { routes: [
             { path: '/site', url: dest },
+            { path: '/adapted', url: dest + '/chat-root', rewriteHtml: true },
             { path: '/chat', host: 'other.test', url: dest + '/wrong-host' },
             { path: 'chat', url: dest + '/chat-root' },
             { path: '/chat-admin', url: dest + '/admin-root' },
@@ -105,6 +138,29 @@ test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
     }
     assert.ok(proxy, output)
     assert.equal(await fetch(proxy + '/chat/ready').then(r => r.text()), '/chat-root/ready', output)
+    await t.test('HTML rewriting is opt-in and preserves scripts, unrelated URLs and response metadata', async () => {
+        const untouched = await fetch(proxy + '/chat/html')
+        assert.equal(await untouched.text(), html)
+        assert.equal(untouched.headers.get('etag'), '"original"')
+        const response = await fetch(proxy + '/adapted/html')
+        const body = await response.text()
+        assert.equal(body, html.replace('href="/chat-root/login', 'href="/adapted/login')
+            .replace('src=/chat-root/image', 'src="/adapted/image"')
+            .replace('src="/chat-root/app.js', 'src="/adapted/app.js')
+            .replaceAll('action="/chat-root/receive', 'action="/adapted/receive')
+            .replace('href="&#47;chat-root/entity"', 'href="/adapted/entity"'))
+        assert.equal(response.headers.get('etag'), null)
+        assert.equal(Number(response.headers.get('content-length')), Buffer.byteLength(body))
+        assert.equal(response.headers.get('x-accepted-encoding'), 'identity')
+        for (const mode of ['large', 'gzip', 'charset', 'json', 'no-transform', 'base', 'partial', 'chunked']) {
+            const res = await fetch(proxy + '/adapted/html?mode=' + mode)
+            const expected = mode === 'large' ? html + ' '.repeat(2 * 1024 * 1024)
+                : mode === 'base' ? '<base href="https://example.com/">' + html
+                : mode === 'chunked' ? '<!doctype html><p>No URL to rewrite</p>' : html
+            assert.equal(await res.text(), expected, mode)
+            assert.equal(res.headers.get('etag'), '"original"', mode)
+        }
+    })
     for (const [path, expected] of [
         ['/chat', '/chat-root'],
         ['/chat?token=example', '/chat-root?token=example'],
