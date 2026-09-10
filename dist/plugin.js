@@ -25,9 +25,16 @@ exports.config = {
     rejectUnauthorized: { type: 'boolean', defaultValue: false, label: "Validate upstream TLS certificates" },
 }
 
-exports.init = api => {
-    api.onServer(handleWebsockets)
+exports.init = async api => {
+    const upgradeHandlers = new Map()
+    await api.onServer(handleWebsockets)
     return {
+        unload() {
+            // onServer subscriptions are managed by HFS, but direct server listeners are not
+            for (const [server, handler] of upgradeHandlers)
+                server.removeListener('upgrade', handler)
+            upgradeHandlers.clear()
+        },
         async middleware(ctx) {
             for (const route of api.getConfig('routes')) {
                 let { path = '', host, url } = route
@@ -75,7 +82,9 @@ exports.init = api => {
     }
 
     function handleWebsockets(server) {
-        server.on('upgrade', (req, clientSocket) => {
+        // onServer can report the same server again when it resumes listening
+        if (upgradeHandlers.has(server)) return
+        const handler = (req, clientSocket) => {
             const key = req.headers['sec-websocket-key']
             if (!key || req.headers.upgrade !== 'websocket' || !req.headers.connection?.includes('Upgrade')) return
             const pathname = req.url.split('?')[0]
@@ -142,7 +151,9 @@ exports.init = api => {
                 return
             }
             clientSocket.destroy() // no route found
-        })
+        }
+        upgradeHandlers.set(server, handler)
+        server.on('upgrade', handler)
     }
 
 }

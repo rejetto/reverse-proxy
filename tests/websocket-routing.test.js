@@ -2,7 +2,7 @@ const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const { createHash, randomBytes } = require('node:crypto')
 const { once } = require('node:events')
-const { mkdtemp, mkdir, copyFile, writeFile, rm } = require('node:fs/promises')
+const { mkdtemp, mkdir, copyFile, writeFile, appendFile, rm } = require('node:fs/promises')
 const http = require('node:http')
 const { tmpdir } = require('node:os')
 const { resolve, join } = require('node:path')
@@ -47,12 +47,23 @@ test('HFS routes real WebSocket upgrades by complete path prefix', { timeout: 20
         port: 0, listen_interface: '127.0.0.1', https_port: -1,
         open_browser_at_start: false, log: '', error_log: '',
         enable_plugins: ['reverse-proxy'],
+        server_code: `exports.init = api => {
+            let server, updates = 0
+            api.onServer(s => { if (s.listening) server = s })
+            api.events.on('pluginUpdated', p => { if (p.id === 'reverse-proxy') updates++ })
+            return { middleware(ctx) {
+                if (ctx.path === '/_test/listeners') {
+                    ctx.body = { count: server.listenerCount('upgrade'), updates }
+                    ctx.stop()
+                }
+            } }
+        }`,
         plugins_config: { 'reverse-proxy': { routes: [
             { path: '/chat', host: 'other.test', url: dest + '/wrong-host' },
             { path: 'chat', url: dest + '/chat-root' },
             { path: '/chat-admin', url: dest + '/admin-root' },
             { path: '/trailing/', url: dest + '/trailing-root/' },
-            { path: '/', url: dest + '/fallback/' },
+            { path: '/', host: 'proxy.test', url: dest + '/fallback/' },
         ] } },
     }))
     const hfs = spawn(process.execPath, [join(hfsDir, 'dist/src/index.js'), '--cwd', cwd, '--no-central'], {
@@ -96,10 +107,39 @@ test('HFS routes real WebSocket upgrades by complete path prefix', { timeout: 20
         await t.test(path, async () => assert.deepEqual(await upgrade(path, true), binaryFrame))
     }
 
+    await t.test('reload and disable remove only the proxy listener', async () => {
+        const initial = await probe()
+        for (let i = 0; i < 3; i++) {
+            const before = await probe()
+            await appendFile(join(cwd, 'plugins/reverse-proxy/plugin.js'), `\n// reload ${i}\n`)
+            for (let n = 0; n < 50 && (await probe()).updates === before.updates; n++) await delay(100)
+            assert.ok((await probe()).updates > before.updates, 'HFS must actually reload the plugin')
+            assert.equal((await probe()).count, initial.count)
+            assert.equal(await upgrade('/chat/room'), '/chat-root/room')
+            await control('stop_plugin')
+            assert.equal((await probe()).count, initial.count - 1)
+            await control('start_plugin')
+            assert.equal((await probe()).count, initial.count)
+            assert.equal(await upgrade('/chat/room'), '/chat-root/room')
+        }
+    })
+
+    function probe() {
+        return fetch(proxy + '/_test/listeners').then(r => r.json())
+    }
+
+    async function control(action) {
+        const res = await fetch(proxy + '/~/api/' + action, {
+            method: 'POST', headers: { 'content-type': 'application/json', 'x-hfs-anti-csrf': '1' },
+            body: JSON.stringify({ id: 'reverse-proxy' }),
+        })
+        assert.equal(res.status, 200, await res.text())
+    }
+
     function upgrade(path, readBody = false) {
         return new Promise((resolve, reject) => {
             const req = http.get(proxy + path, { headers: {
-                Connection: 'Upgrade', Upgrade: 'websocket',
+                Host: 'proxy.test', Connection: 'Upgrade', Upgrade: 'websocket',
                 'Sec-WebSocket-Key': randomBytes(16).toString('base64'), 'Sec-WebSocket-Version': '13',
             } })
             req.on('upgrade', (res, socket, head) => {
