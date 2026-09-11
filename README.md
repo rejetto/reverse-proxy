@@ -6,23 +6,29 @@ HFS plugin to proxy configured paths to other servers
 
 HFS ~ HTTP File Server https://github.com/rejetto/hfs
 
-## Adapting HTML links to a subpath
+## Adapting HTML and CSS URLs to a subpath
 
-Enable **Rewrite HTML URLs** on an individual route only when the upstream application needs it.
+Enable **Rewrite HTML/CSS URLs** on an individual route only when the upstream application needs it.
 It is disabled by default. For example, with source `/app` and destination `http://localhost:3000`,
 `<script src="/app.js">` becomes `<script src="/app/app.js">`.
 With destination `http://localhost:3000/site`, only URLs within `/site` are mapped to `/app`.
 
 This rewrites root-relative `href`, `src`, `action`, `formaction`, `poster`, `cite` and `background`
 attributes. A bundled HTML parser identifies attributes without changing script contents or comments.
-JavaScript URLs (including WebSocket connections), CSS, `srcset`, cookies and absolute URLs are not rewritten.
+CSS `url(...)` references and `@import` URLs are also rewritten, in external stylesheets, `<style>` blocks
+and `style` attributes. For example, `url(/images/logo.svg)` becomes `url(/app/images/logo.svg)`.
+Relative URLs, external URLs, `data:` URLs, fragment references, comments and ordinary CSS strings remain unchanged.
+JavaScript URLs (including WebSocket connections), `srcset`, cookies and absolute URLs are not rewritten.
 Prefer the application's own base URL setting when available; this option does not provide universal subpath support.
 For example, Socket.IO's default `io()` still needs a route for `/socket.io`.
 
-The proxy requests uncompressed upstream responses on this route. Rewriting applies to HTML up to 2 MiB,
+The proxy requests uncompressed upstream responses on this route. Rewriting applies to HTML and CSS up to 2 MiB,
 declared as UTF-8 (or ASCII-only HTML without a charset). Compressed responses, other encodings,
 partial responses, `Cache-Control: no-transform`, and documents with an explicit `<base href>` pass through unchanged.
 Larger documents also pass through unchanged, including when their size was not known in advance.
+CSS that the parser cannot interpret passes through unchanged. Inline CSS is left untouched when the page's
+CSP contains hashes. External stylesheets with Subresource Integrity are incompatible with rewriting their contents;
+the plugin does not remove integrity checks. Configure the application's base URL instead in that case.
 
 ## Messing with forwarded requests
 
@@ -45,20 +51,24 @@ exports.customApi =  {
 Run `HFS_DIR=/path/to/hfs node --test tests/*.test.js` with a built HFS checkout.
 The integration test starts an isolated HFS instance and a local HTTP/WebSocket upstream on loopback ports.
 It covers route boundaries, fragmented handshakes, binary frames, plugin reloads and redirects.
-It also checks opt-in HTML rewriting and unchanged fallback responses.
+It also checks opt-in HTML/CSS rewriting and unchanged fallback responses.
 
 For a real browser test, install the dependencies of the official
 [Socket.IO chat example](https://github.com/socketio/chat-example/tree/cjs/step5), then run:
 
 ```sh
+npm ci
+npx playwright install chromium
 CHAT_DIR=/path/to/chat-example HFS_DIR=/path/to/hfs node tests/html-browser.cjs
 ```
 
-This uses the HFS checkout's Playwright installation and Chromium. It starts isolated servers,
+This uses Playwright and Chromium. It starts isolated servers,
 checks script URLs with the option enabled and disabled, and exchanges messages between two browser tabs
 over real WebSockets, including after a page reload. The chat's HTML and JavaScript are unchanged.
+An additional page checks an external stylesheet, an imported stylesheet, a real font and background images,
+including inline CSS, all loaded through HFS under a path prefix.
 
 ## Building
 
-After changing `rewrite-html.js`, run `npm ci && npm run build` to update its bundled copy in `dist`.
-The parser and its licenses are distributed with the plugin; users do not need npm.
+After changing `rewrite-html.js` or `rewrite-css.js`, run `npm ci && npm run build` to update the bundle in `dist`.
+The parsers and their licenses are distributed with the plugin; users do not need npm.

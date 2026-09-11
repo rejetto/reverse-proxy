@@ -1,9 +1,10 @@
-exports.version = 3
+exports.version = 3.1
 exports.apiRequired = 12.7 // 'onServer' event
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 3.1, "message": "Extend opt-in URL rewriting to CSS stylesheets, imports and inline styles" },
     { "version": 3, "message": "Add opt-in HTML URL rewriting for individual proxy routes" },
     { "version": 2.22, "message": "Fix WebSocket routing, fragmented handshakes and plugin reloads; preserve proxy paths and status in redirects" },
     { "version": 2.21, "message": "Handle upstream WebSocket connection errors" },
@@ -22,8 +23,9 @@ exports.config = {
             path: { label: 'Source path', $width: 1, placeholder: '/website', $mergeRender: { host: {} } },
             host: { label: 'Source host', $width: 1, placeholder: "leave empty for any", $hideUnder: 'sm' },
             url: { label: 'Destination URL', $width: 2, placeholder: 'http://example.com' },
-            rewriteHtml: { type: 'boolean', defaultValue: false, label: "Rewrite HTML URLs",
-                helperText: "Adapt root-relative HTML links to the source path. Does not rewrite JavaScript or CSS." }
+            // keep the original key so existing route settings carry over
+            rewriteHtml: { type: 'boolean', defaultValue: false, label: "Rewrite HTML/CSS URLs",
+                helperText: "Adapt root-relative HTML and CSS URLs to the source path. Does not rewrite JavaScript." }
         }
     },
     rejectUnauthorized: { type: 'boolean', defaultValue: false, label: "Validate upstream TLS certificates" },

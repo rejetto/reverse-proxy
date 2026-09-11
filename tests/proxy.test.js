@@ -14,6 +14,13 @@ const test = require('node:test')
 test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
     const hfsDir = resolve(process.env.HFS_DIR || join(__dirname, '../../../hfs'))
     const cwd = await mkdtemp(join(tmpdir(), 'hfs-proxy-routing-'))
+    const css = String.raw`@import "/chat-root/theme.css" layer(theme) screen;
+/* url(/chat-root/comment.png) */
+@font-face { font-family: Test; src: url('/chat-root/font.woff2') format('woff2') }
+.test { background: url(\2f chat-root/image.svg?q=1#icon); --image: url(/chat-root/custom.png);
+content: "url(/chat-root/text.png)"; mask: url(#mask); cursor: url(relative.cur), auto;
+border-image: url(//example.com/image.png); list-style: url(data:image/png;base64,AA==) }
+@namespace url(/chat-root/namespace);`
     const html = '<!doctype html><meta charset="utf-8"><a href="/chat-root/login?a=1&amp;b=2">Caffè</a>'
         + '<img src=/chat-root/image><script src="/chat-root/app.js"></script>'
         + '<script>const untouched = \'<a href="/chat-root/private">\';</script>'
@@ -25,7 +32,19 @@ test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
         + '<a href="/\t/[invalid">invalid URL</a>'
     const upstream = http.createServer(async (req, res) => {
         const url = new URL(req.url, 'http://upstream')
-        if (url.pathname.endsWith('/html')) {
+        if (url.pathname.endsWith('/style.css')) {
+            res.setHeader('content-type', 'text/css; charset=utf-8')
+            res.setHeader('etag', '"css-original"')
+            if (url.searchParams.has('no-transform')) res.setHeader('cache-control', 'no-transform')
+            res.end(css)
+        }
+        else if (url.pathname.endsWith('/inline-css')) {
+            res.setHeader('content-type', 'text/html; charset=utf-8')
+            if (url.searchParams.has('csp')) res.setHeader('content-security-policy', "style-src 'sha256-example'")
+            res.end('<style>.test { background: url(/chat-root/image.svg) }</style>'
+                + '<div style="background: url(&quot;/chat-root/image.svg?q=1&amp;x=2&quot;)"></div>')
+        }
+        else if (url.pathname.endsWith('/html')) {
             let body = Buffer.from(html)
             res.setHeader('content-type', 'text/html; charset=utf-8')
             res.setHeader('etag', '"original"')
@@ -138,6 +157,21 @@ test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
     }
     assert.ok(proxy, output)
     assert.equal(await fetch(proxy + '/chat/ready').then(r => r.text()), '/chat-root/ready', output)
+    await t.test('CSS URLs and imports are opt-in, including inline styles', async () => {
+        assert.equal(await fetch(proxy + '/chat/style.css').then(r => r.text()), css)
+        const response = await fetch(proxy + '/adapted/style.css')
+        assert.equal(await response.text(), css.replace('"/chat-root/theme.css"', '"/adapted/theme.css"')
+            .replace("url('/chat-root/font.woff2')", 'url(/adapted/font.woff2)')
+            .replace(String.raw`url(\2f chat-root/image.svg?q=1#icon)`, 'url(/adapted/image.svg?q=1#icon)')
+            .replace('url(/chat-root/custom.png)', 'url(/adapted/custom.png)'))
+        assert.equal(response.headers.get('etag'), null)
+        assert.equal(await fetch(proxy + '/adapted/style.css?no-transform').then(r => r.text()), css)
+        const inline = await fetch(proxy + '/adapted/inline-css').then(r => r.text())
+        assert.equal(inline, '<style>.test { background: url(/adapted/image.svg) }</style>'
+            + '<div style="background: url(/adapted/image.svg?q=1&amp;x=2)"></div>')
+        assert.equal(await fetch(proxy + '/adapted/inline-css?csp').then(r => r.text()),
+            await fetch(proxy + '/chat/inline-css?csp').then(r => r.text()))
+    })
     await t.test('HTML rewriting is opt-in and preserves scripts, unrelated URLs and response metadata', async () => {
         const untouched = await fetch(proxy + '/chat/html')
         assert.equal(await untouched.text(), html)
@@ -184,7 +218,12 @@ test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
         for (let i = 0; i < 3; i++) {
             const before = await probe()
             await appendFile(join(cwd, 'plugins/reverse-proxy/plugin.js'), `\n// reload ${i}\n`)
-            for (let n = 0; n < 50 && (await probe()).updates === before.updates; n++) await delay(100)
+            // pluginUpdated may precede the replacement plugin's async initialization
+            for (let n = 0; n < 50; n++) {
+                const current = await probe()
+                if (current.updates > before.updates && current.count === initial.count) break
+                await delay(100)
+            }
             assert.ok((await probe()).updates > before.updates, 'HFS must actually reload the plugin')
             assert.equal((await probe()).count, initial.count)
             assert.equal(await upgrade('/chat/room'), '/chat-root/room')
