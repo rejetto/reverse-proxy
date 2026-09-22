@@ -1,9 +1,10 @@
-exports.version = 3.12
+exports.version = 3.13
 exports.apiRequired = 12.7 // 'onServer' event
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 3.13, "message": "Keep HFS login, APIs and interface assets accessible with catch-all proxy routes" },
     { "version": 3.12, "message": "Fix proxy routing with domain roots" },
     { "version": 3.11, "message": "Fix WebSocket connection failures caused by duplicate slashes when joining proxy paths" },
     { "version": 3.1, "message": "Extend opt-in URL rewriting to CSS stylesheets, imports and inline styles" },
@@ -17,6 +18,7 @@ exports.changelog = [
     { "version": 1.1, "message": "Better redirection support" }
 ]
 
+exports.configDialog = { maxWidth: 'lg' }
 exports.config = {
     routes: {
         helperText: "First rule matching applies (top to bottom)",
@@ -47,6 +49,8 @@ exports.init = async api => {
         },
         async middleware(ctx) {
             const requestPath = ctx.state.originalPath
+            // HFS needs its internal URLs for login, APIs and interface assets even with a catch-all route
+            if (requestPath.startsWith('/~/')) return
             for (const route of api.getConfig('routes')) {
                 let { path = '', host, url } = route
                 if (host && ctx.host !== host) continue
@@ -132,6 +136,10 @@ exports.init = async api => {
             const key = req.headers['sec-websocket-key']
             if (!key || req.headers.upgrade !== 'websocket' || !req.headers.connection?.includes('Upgrade')) return
             const pathname = req.url.split('?')[0]
+            if (pathname.startsWith('/~/')) {
+                clientSocket.destroy()
+                return
+            }
             for (const route of api.getConfig('routes')) {
                 let { path = '', host, url } = route
                 if (host && req.headers.host !== host) continue

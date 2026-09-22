@@ -6,6 +6,9 @@ HFS plugin to proxy configured paths to other servers
 
 HFS ~ HTTP File Server https://github.com/rejetto/hfs
 
+HFS internal URLs under `/~/` are never forwarded, even with a catch-all `/` route,
+so HFS login, APIs and interface assets remain accessible. WebSocket upgrades under `/~/` are rejected.
+
 ## Domain roots
 
 Source paths refer to the public request URL, before HFS applies a domain root.

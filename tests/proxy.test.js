@@ -181,6 +181,19 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
     }
     assert.ok(proxy, output)
     assert.equal(await fetch(proxy + '/chat/ready').then(r => r.text()), '/chat-root/ready', output)
+    await t.test('HFS API and Admin remain reachable behind a catch-all route', async () => {
+        for (const host of ['proxy.test', 'root.test']) {
+            const session = await hostRequest('/~/api/refresh_session', host)
+            assert.equal(JSON.parse(session.body).username, '')
+            const admin = await hostRequest('/~/admin/', host)
+            assert.match(admin.headers['content-type'], /text\/html/)
+            assert.match(admin.body, /<!doctype html/i)
+        }
+        assert.equal((await hostRequest('/~other', 'proxy.test')).body, '/fallback/~other')
+    })
+    await t.test('HFS internal WebSocket paths are not forwarded by a catch-all route', async () => {
+        await assert.rejects(upgrade('/~/api/refresh_session'), { code: 'ECONNRESET' })
+    })
     await t.test('domain roots do not alter public proxy paths', async () => {
         assert.equal(await hostRequest('/fresh/ready?x=1').then(r => r.body), '/ready?x=1')
         assert.equal(await hostRequest('/legacy/ready').then(r => r.body), '/chat-root/ready')
@@ -355,8 +368,8 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
         return JSON.parse(body)
     }
 
-    async function hostRequest(path) {
-        const req = http.get(proxy + path, { headers: { Host: 'root.test' } })
+    async function hostRequest(path, host = 'root.test') {
+        const req = http.get(proxy + path, { headers: { Host: host, 'x-hfs-anti-csrf': '1' } })
         const [res] = await once(req, 'response')
         const chunks = []
         for await (const chunk of res) chunks.push(chunk)
