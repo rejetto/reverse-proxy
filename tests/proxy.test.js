@@ -9,6 +9,7 @@ const { tmpdir } = require('node:os')
 const { resolve, join } = require('node:path')
 const { setTimeout: delay } = require('node:timers/promises')
 const test = require('node:test')
+const { WebSocket, WebSocketServer } = require('ws')
 
 // run against a built HFS checkout: HFS_DIR=/path/to/hfs node --test tests/*.test.js
 test('HFS reverse proxy integration', { timeout: 20000 }, async t => {
@@ -107,6 +108,17 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
         upstream.close()
     })
     const dest = `http://127.0.0.1:${upstream.address().port}`
+    const wsHttp = http.createServer()
+    const wsServer = new WebSocketServer({ server: wsHttp, path: '/socket' })
+    wsServer.on('connection', socket => socket.on('message', data => socket.send(data)))
+    wsHttp.listen(0, '127.0.0.1')
+    await once(wsHttp, 'listening')
+    t.after(() => {
+        for (const socket of wsServer.clients) socket.terminate()
+        wsServer.close()
+        wsHttp.close()
+    })
+    const wsDest = `http://127.0.0.1:${wsHttp.address().port}`
     await mkdir(join(cwd, 'plugins/reverse-proxy'), { recursive: true })
     await cp(resolve(__dirname, '../dist'), join(cwd, 'plugins/reverse-proxy'), { recursive: true })
     await writeFile(join(cwd, 'config.yaml'), JSON.stringify({
@@ -125,6 +137,8 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
             } }
         }`,
         plugins_config: { 'reverse-proxy': { routes: [
+            { path: '/ws-app', url: wsDest },
+            { path: '/ws-slash', url: wsDest + '/' },
             { path: '/site', url: dest },
             { path: '/adapted', url: dest + '/chat-root', rewriteHtml: true },
             { path: '/chat', host: 'other.test', url: dest + '/wrong-host' },
@@ -157,6 +171,24 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
     }
     assert.ok(proxy, output)
     assert.equal(await fetch(proxy + '/chat/ready').then(r => r.text()), '/chat-root/ready', output)
+    await t.test('WebSocket messages reach a root-mounted server through a path prefix', async () => {
+        await echo(wsDest + '/socket')
+        for (const path of ['/ws-app/socket', '/ws-slash/socket'])
+            await echo(proxy + path)
+
+        async function echo(url) {
+            const socket = new WebSocket(url.replace('http:', 'ws:'), { handshakeTimeout: 2000 })
+            try {
+                await once(socket, 'open')
+                const reply = once(socket, 'message')
+                socket.send('Caffè via WebSocket ✓')
+                assert.equal(String((await reply)[0]), 'Caffè via WebSocket ✓')
+            }
+            finally {
+                socket.terminate()
+            }
+        }
+    })
     await t.test('CSS URLs and imports are opt-in, including inline styles', async () => {
         assert.equal(await fetch(proxy + '/chat/style.css').then(r => r.text()), css)
         const response = await fetch(proxy + '/adapted/style.css')

@@ -1,9 +1,10 @@
-exports.version = 3.1
+exports.version = 3.11
 exports.apiRequired = 12.7 // 'onServer' event
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 3.11, "message": "Fix WebSocket connection failures caused by duplicate slashes when joining proxy paths" },
     { "version": 3.1, "message": "Extend opt-in URL rewriting to CSS stylesheets, imports and inline styles" },
     { "version": 3, "message": "Add opt-in HTML URL rewriting for individual proxy routes" },
     { "version": 2.22, "message": "Fix WebSocket routing, fragmented handshakes and plugin reloads; preserve proxy paths and status in redirects" },
@@ -118,7 +119,9 @@ exports.init = async api => {
                 const parsedUrl = new URL(url)
                 const targetHost = parsedUrl.hostname
                 const targetPort = parseInt(parsedUrl.port) || parsedUrl.protocol === 'https:' && 443 || 80
-                const targetPath = parsedUrl.pathname + req.url.slice(path.length)
+                const suffix = req.url.slice(path.length)
+                const targetPath = parsedUrl.pathname + (parsedUrl.pathname.endsWith('/') && suffix.startsWith('/')
+                    ? suffix.slice(1) : suffix)
                 const outgoingHeaders = Object.entries({
                     ...req.headers,
                     host: targetHost + (targetPort ? `:${targetPort}` : ''),

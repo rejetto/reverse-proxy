@@ -9,6 +9,7 @@
     "css-tree": "^3.2.1",
     "esbuild": "^0.27.0",
     "parse5": "^7.3.0",
-    "playwright": "^1.63.0"
+    "playwright": "^1.63.0",
+    "ws": "^8.21.3"
   }
 }
