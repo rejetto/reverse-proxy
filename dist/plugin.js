@@ -1,9 +1,10 @@
-exports.version = 3.13
-exports.apiRequired = 12.7 // 'onServer' event
+exports.version = 4
+exports.apiRequired = 13.4 // api.onServer cleanup
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 4, "message": "Protect routes with accounts and groups" },
     { "version": 3.13, "message": "Keep HFS login, APIs and interface assets accessible with catch-all proxy routes" },
     { "version": 3.12, "message": "Fix proxy routing with domain roots" },
     { "version": 3.11, "message": "Fix WebSocket connection failures caused by duplicate slashes when joining proxy paths" },
@@ -19,17 +20,21 @@ exports.changelog = [
 ]
 
 exports.configDialog = { maxWidth: 'lg' }
+exports.frontend_js = "login.js"
 exports.config = {
     routes: {
         helperText: "First rule matching applies (top to bottom)",
         type: 'array', reorder: true, defaultValue: [], width: { xs: 'auto', sm: 600, md: 800 },
         fields: {
             path: { label: 'Source path', $width: 1, placeholder: '/website', $mergeRender: { host: {} } },
-            host: { label: 'Source host', $width: 1, placeholder: "leave empty for any", $hideUnder: 'sm' },
+            host: { label: 'Source host', $width: 1, placeholder: "leave empty for any", $hideUnder: true },
             url: { label: 'Destination URL', $width: 2, placeholder: 'http://example.com' },
             // keep the original key so existing route settings carry over
             rewriteHtml: { type: 'boolean', defaultValue: false, label: "Rewrite HTML/CSS URLs",
-                helperText: "Adapt root-relative HTML and CSS URLs to the source path. Does not rewrite JavaScript." }
+                $width: .4, $column: { headerName: "Rewrite URLs" },
+                helperText: "Adapt root-relative HTML and CSS URLs to the source path. Does not rewrite JavaScript." },
+            accounts: { type: 'username', multiple: true, label: "Allowed accounts", $width: 1, $column: { headerName: "Accounts" },
+                helperText: "Allow only these HFS accounts or their group members. Leave empty for public access." }
         }
     },
     rejectUnauthorized: { type: 'boolean', defaultValue: false, label: "Validate upstream TLS certificates" },
@@ -37,16 +42,10 @@ exports.config = {
 
 exports.init = async api => {
     migratePaths()
-    // TODO: delegate listener cleanup to api.onServer when apiRequired can be raised to 13.4
-    const upgradeHandlers = new Map()
+    const upgradeServers = new Set()
+    let serveLogin
     await api.onServer(handleWebsockets)
     return {
-        unload() {
-            // onServer subscriptions are managed by HFS, but direct server listeners are not
-            for (const [server, handler] of upgradeHandlers)
-                server.removeListener('upgrade', handler)
-            upgradeHandlers.clear()
-        },
         async middleware(ctx) {
             const requestPath = ctx.state.originalPath
             // HFS needs its internal URLs for login, APIs and interface assets even with a catch-all route
@@ -58,6 +57,21 @@ exports.init = async api => {
                     path = '/' + path
                 if (!requestPath.startsWith(path)) continue
                 if (path.length > 1 && requestPath.length > path.length && requestPath[path.length] !== '/') continue
+                const denied = accessStatus(route, ctx)
+                if (denied) {
+                    ctx.stop()
+                    ctx.status = denied
+                    ctx.body = denied === 401 ? "Unauthorized" : "Forbidden"
+                    ctx.set('Cache-Control', 'no-store')
+                    if (ctx.method === 'GET' && ctx.get('accept').includes('text/html')) {
+                        serveLogin ||= api.require('./serveGuiFiles').serveGuiFiles(undefined, '/~/frontend/')
+                        ctx.state.serveApp = true
+                        await serveLogin(ctx)
+                        ctx.body = ctx.body.replace('</head>', '<meta name="hfs-proxy-login" content="1"></head>')
+                        ctx.status = denied
+                    }
+                    return
+                }
                 if (url.endsWith('/'))
                     url = url.slice(0, -1)
                 const dest = url + ctx.originalUrl.slice(path.length === 1 ? 0 : path.length)
@@ -109,6 +123,21 @@ exports.init = async api => {
         },
     }
 
+    function accessStatus(route, ctx) {
+        return !route.accounts?.length || api.ctxBelongsTo(ctx, route.accounts) ? 0 : ctx.state.account ? 403 : 401
+    }
+
+    async function authenticateUpgrade(req) {
+        const { app } = api.require('./index')
+        const { sessionMiddleware, prepareState, someSecurity } = api.require('./middlewares')
+        const res = new (api.require('http').ServerResponse)(req)
+        const ctx = app.createContext(req, res)
+        let accepted = false
+        // upgrades bypass Koa; reuse HFS checks instead of independently interpreting credentials or session cookies
+        await sessionMiddleware(ctx, () => prepareState(ctx, () => someSecurity(ctx, async () => { accepted = true })))
+        return { ctx, accepted, cookies: res.getHeader('set-cookie') || [] }
+    }
+
     function migratePaths() {
         if (api.getConfig('pathsMigrationDone')) return
         const { makeMatcher } = api.require('./misc')
@@ -131,8 +160,8 @@ exports.init = async api => {
 
     function handleWebsockets(server) {
         // onServer can report the same server again when it resumes listening
-        if (upgradeHandlers.has(server)) return
-        const handler = (req, clientSocket) => {
+        if (upgradeServers.has(server)) return
+        const handler = async (req, clientSocket) => {
             const key = req.headers['sec-websocket-key']
             if (!key || req.headers.upgrade !== 'websocket' || !req.headers.connection?.includes('Upgrade')) return
             const pathname = req.url.split('?')[0]
@@ -147,6 +176,28 @@ exports.init = async api => {
                     path = '/' + path
                 if (!pathname.startsWith(path)) continue
                 if (!path.endsWith('/') && pathname.length > path.length && pathname[path.length] !== '/') continue
+                let cookies = []
+                if (route.accounts?.length) {
+                    let denied = 401
+                    try {
+                        const auth = await authenticateUpgrade(req)
+                        cookies = auth.cookies
+                        denied = auth.accepted ? accessStatus(route, auth.ctx) : 401
+                        // browsers must not use an HFS session to open a protected socket from another origin
+                        if (req.headers.origin && req.headers.origin !== `${auth.ctx.protocol}://${auth.ctx.host}`)
+                            denied = 403
+                    }
+                    catch (e) {
+                        denied = 401
+                        console.error('WebSocket authentication failed:', e)
+                    }
+                    // unloading or disconnecting during authentication must not create a new upstream connection
+                    if (!upgradeServers.has(server) || clientSocket.destroyed) return
+                    if (denied) {
+                        clientSocket.end(`HTTP/1.1 ${denied} ${denied === 401 ? 'Unauthorized' : 'Forbidden'}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
+                        return
+                    }
+                }
                 const parsedUrl = new URL(url)
                 const targetHost = parsedUrl.hostname
                 const targetPort = parseInt(parsedUrl.port) || parsedUrl.protocol === 'https:' && 443 || 80
@@ -188,7 +239,8 @@ exports.init = async api => {
                     }
                     serverSocket.removeListener('data', handleHandshake)
                     const accept = api.require('crypto').createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64') // magic string (RFC 6455)
-                    clientSocket.write(header.replace(/^(Sec-WebSocket-Accept:\s+).+$/im, '$1' + accept) + '\r\n\r\n', 'latin1')
+                    clientSocket.write(header.replace(/^(Sec-WebSocket-Accept:\s+).+$/im, '$1' + accept)
+                        + cookies.map(cookie => '\r\nSet-Cookie: ' + cookie).join('') + '\r\n\r\n', 'latin1')
                     // a frame can arrive with the headers and must retain its original bytes
                     clientSocket.write(response.subarray(end + 4))
                     clientSocket.upgraded = true
@@ -206,8 +258,12 @@ exports.init = async api => {
             }
             clientSocket.destroy() // no route found
         }
-        upgradeHandlers.set(server, handler)
+        upgradeServers.add(server)
         server.on('upgrade', handler)
+        return () => {
+            server.removeListener('upgrade', handler)
+            upgradeServers.delete(server)
+        }
     }
 
 }

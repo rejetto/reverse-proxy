@@ -126,10 +126,17 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
         open_browser_at_start: false, log: '', error_log: '',
         roots: { 'root.test': '/doc', 'nested.test': '/doc/nested', '*.wild.test': '//wild/' },
         enable_plugins: ['reverse-proxy'],
+        accounts: {
+            'proxy-users': {},
+            allowed: { password: 'secret', belongs: ['proxy-users'] },
+            outsider: { password: 'secret' },
+            veto: { password: 'secret', belongs: ['proxy-users'] },
+        },
         server_code: `exports.init = api => {
             let server, updates = 0
             api.onServer(s => { if (s.listening) server = s })
             api.events.on('pluginUpdated', p => { if (p.id === 'reverse-proxy') updates++ })
+            api.events.on('finalizingLogin', ({ username }) => username === 'veto' ? 'Second factor required' : undefined)
             return { middleware(ctx) {
                 if (ctx.path === '/_test/listeners') {
                     ctx.body = { count: server.listenerCount('upgrade'), updates }
@@ -147,6 +154,9 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
             { path: '/documentary', url: dest },
             { path: '/doc/unrelated', host: 'unrelated.test', url: dest },
             { path: 'wild/app', host: 'app.wild.test', url: dest },
+            { path: '/protected', url: dest, accounts: ['proxy-users'] },
+            { path: '/protected', url: dest + '/must-not-fall-through' },
+            { path: '/protected-ws', url: wsDest, accounts: ['proxy-users'] },
             { path: '/ws-app', url: wsDest },
             { path: '/ws-slash', url: wsDest + '/' },
             { path: '/site', url: dest },
@@ -181,6 +191,96 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
     }
     assert.ok(proxy, output)
     assert.equal(await fetch(proxy + '/chat/ready').then(r => r.text()), '/chat-root/ready', output)
+    await t.test('protected routes authenticate HTTP and WebSockets through HFS', async () => {
+        const denied = await fetch(proxy + '/protected/ready')
+        assert.equal(denied.status, 401)
+        const loginPage = await fetch(proxy + '/protected/ready', { headers: { accept: 'text/html' } })
+        assert.equal(loginPage.status, 401)
+        assert.match(await loginPage.text(), /name="hfs-proxy-login"/)
+        assert.equal((await fetch(proxy + '/protected/ready', { method: 'POST', body: 'must not reach upstream' })).status, 401)
+        assert.equal((await fetch(proxy + '/protected/ready', {
+            headers: { authorization: basic('allowed', 'wrong') },
+        })).status, 401)
+        assert.equal((await fetch(proxy + '/protected/ready', {
+            headers: { authorization: basic('outsider') },
+        })).status, 403)
+        await assert.rejects(echoProtected({}), /401/)
+        await assert.rejects(echoProtected({ authorization: basic('allowed', 'wrong') }), /401/)
+        await assert.rejects(echoProtected({ authorization: basic('outsider') }), /403/)
+        assert.equal((await fetch(proxy + '/protected/ready', { headers: { authorization: basic('veto') } })).status, 401)
+        await assert.rejects(echoProtected({ authorization: basic('veto') }), /401/)
+        await echoProtected({ authorization: basic('allowed') })
+        const cookie = await login()
+        assert.equal(await fetch(proxy + '/protected/ready', { headers: { cookie } }).then(r => r.text()), '/ready')
+        await echoProtected({ cookie })
+        await echoProtected({ cookie, origin: proxy })
+        await assert.rejects(echoProtected({ cookie, origin: 'https://other.example' }), /403/)
+        const forged = cookie.replace(/hfs_http=[^;]+/, 'hfs_http=' + Buffer.from(JSON.stringify({ username: 'allowed' })).toString('base64'))
+        await assert.rejects(echoProtected({ cookie: forged }), /401/)
+        await control('invalidate_sessions', { username: 'allowed' })
+        assert.equal((await fetch(proxy + '/protected/ready', { headers: { cookie } })).status, 401)
+        await assert.rejects(echoProtected({ cookie }), /401/)
+
+        for (const changes of [{ disabled: true }, { expire: '2000-01-01' }, { allow_net: '192.0.2.1' }]) {
+            const cookie = await login()
+            await control('set_account', { username: 'allowed', changes })
+            try {
+                assert.equal((await fetch(proxy + '/protected/ready', { headers: { cookie } })).status, 401)
+                await assert.rejects(echoProtected({ cookie }), /401/)
+            }
+            finally {
+                await control('set_account', { username: 'allowed', changes: { disabled: false, expire: null, allow_net: '' } })
+            }
+        }
+
+        await control('set_config', { values: { proxies: 1 } })
+        try {
+            const forwarded = { 'x-forwarded-proto': 'https', 'x-forwarded-for': '198.51.100.1' }
+            const cookie = await login(forwarded)
+            assert.match(cookie, /hfs_https=/)
+            await echoProtected({ ...forwarded, cookie, origin: proxy.replace('http:', 'https:') })
+            await assert.rejects(echoProtected({ ...forwarded, cookie, 'x-forwarded-for': '198.51.100.2' }), /401/)
+        }
+        finally {
+            await control('set_config', { values: { proxies: 0 } })
+        }
+
+        await control('set_config', { values: { session_duration: 1 } })
+        try {
+            const refreshed = await fetch(proxy + '/protected/ready', { headers: { cookie: await login() } })
+            await refreshed.text()
+            const cookie = refreshed.headers.getSetCookie().map(x => x.split(';', 1)[0]).join('; ')
+            await delay(1100)
+            assert.equal((await fetch(proxy + '/protected/ready', { headers: { cookie } })).status, 401)
+            await assert.rejects(echoProtected({ cookie }), /401/)
+        }
+        finally {
+            await control('set_config', { values: { session_duration: 86400 } })
+        }
+
+        function basic(username, password = 'secret') {
+            return 'Basic ' + Buffer.from(username + ':' + password).toString('base64')
+        }
+
+        async function login(headers = {}) {
+            const response = await fetch(proxy + '/protected/ready', { headers: { authorization: basic('allowed'), ...headers } })
+            assert.equal(response.status, 200, await response.text())
+            return response.headers.getSetCookie().map(x => x.split(';', 1)[0]).join('; ')
+        }
+
+        async function echoProtected(headers) {
+            const socket = new WebSocket(proxy.replace('http:', 'ws:') + '/protected-ws/socket', { headers, handshakeTimeout: 2000 })
+            try {
+                await once(socket, 'open')
+                const reply = once(socket, 'message')
+                socket.send('Authenticated WebSocket ✓')
+                assert.equal(String((await reply)[0]), 'Authenticated WebSocket ✓')
+            }
+            finally {
+                socket.terminate()
+            }
+        }
+    })
     await t.test('HFS API and Admin remain reachable behind a catch-all route', async () => {
         for (const host of ['proxy.test', 'root.test']) {
             const session = await hostRequest('/~/api/refresh_session', host)

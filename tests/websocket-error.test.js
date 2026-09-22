@@ -34,11 +34,13 @@ test('repeated onServer callbacks keep one handler and preserve other listeners'
     const server = new EventEmitter()
     const otherHandler = () => {}
     server.on('upgrade', otherHandler)
-    const plugin = await require('../dist/plugin.js').init({
+    const cleanups = []
+    await require('../dist/plugin.js').init({
         getConfig: key => key === 'pathsMigrationDone',
-        onServer(cb) { cb(server); cb(server) },
+        onServer(cb) { cleanups.push(cb(server), cb(server)) },
     })
     assert.equal(server.listenerCount('upgrade'), 2)
-    plugin.unload()
+    assert.equal(cleanups.filter(Boolean).length, 1)
+    for (const cleanup of cleanups) cleanup?.()
     assert.deepEqual(server.listeners('upgrade'), [otherHandler])
 })

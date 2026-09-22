@@ -6,25 +6,40 @@ HFS plugin to proxy configured paths to other servers
 
 HFS ~ HTTP File Server https://github.com/rejetto/hfs
 
+Install from **HFS Admin → Plugins → Get more**: search for `reverse-proxy` and install it.
+Then return to the installed plugins list and click the **Options button on the reverse-proxy row** to configure routes.
+
 HFS internal URLs under `/~/` are never forwarded, even with a catch-all `/` route,
 so HFS login, APIs and interface assets remain accessible. WebSocket upgrades under `/~/` are rejected.
+
+## Protected routes
+
+Set **Allowed accounts** on a route to restrict it to those HFS accounts or members of the selected groups.
+Leave the field empty for public access. The first matching route still wins: denied requests do not fall through
+to a later public rule. Protect every route that exposes the application, including any separate WebSocket or API routes.
+
+Browser navigation to a protected URL displays the standard HFS login dialog and returns to the same URL after login.
+Other HTTP requests receive `401` when not authenticated or `403` when the account has no access.
+HTTP and WebSocket handshakes use HFS authentication, including session signatures, expiry, revocation,
+account restrictions and group membership. HTTP Basic authentication follows HFS's settings and login hooks.
+When HFS is behind a TLS-terminating proxy, configure HFS's trusted proxy count so HTTPS sessions and client addresses
+are interpreted correctly. Protected browser WebSockets must originate from the same origin as HFS.
+
+Normally, log out through the HFS interface on the same host.
+If a catch-all `/` route replaces that interface with the upstream application, the plugin provides an **optional logout page**
+at `/~/plugins/reverse-proxy/session.html` on that host. It shows the current HFS account and a logout button.
+This page is not required to protect routes or log in. You can link it from the upstream application;
+the plugin does not add a logout button to proxied pages automatically.
+The page uses HFS's standard logout API and logs out of HFS, not the upstream application's own account.
+
+Access is checked on each HTTP request and
+WebSocket handshake; logout or account changes do not forcibly disconnect WebSockets that are already open.
 
 ## Domain roots
 
 Source paths refer to the public request URL, before HFS applies a domain root.
 For example, use `/app` even if the domain's HFS root is `/documents`.
 HTTP, WebSocket connections, redirects and HTML/CSS rewriting use this same public path.
-
-On the first start after upgrading to 3.12, existing source paths are migrated automatically:
-`/documents/app` becomes `/app` when `/documents` is a configured domain root.
-For routes with a source host, only that host's effective root is considered.
-Routes without a source host use the longest matching root prefix across all domains.
-Only complete path segments match; `/doc` does not match `/documents`.
-
-The migration assumes matching prefixes were added to compensate for HFS domain roots.
-It saves the converted routes and `pathsMigrationDone: true` under
-`plugins_config` → `reverse-proxy` in HFS's `config.yaml`.
-This internal flag prevents further conversion after restarts or configuration changes.
 
 ## Adapting HTML and CSS URLs to a subpath
 

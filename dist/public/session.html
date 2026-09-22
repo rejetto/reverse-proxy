@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HFS session</title>
+<style>
+body { font: 1rem system-ui; max-width: 32em; margin: 4em auto; padding: 1em; color-scheme: light dark }
+button, a { font: inherit; margin-right: 1em }
+</style>
+<h1>HFS session</h1>
+<p id="status" role="status">Loading…</p>
+<button id="logout" hidden>Log out of HFS</button>
+<a href="../../../">Home</a>
+<script>
+const status = document.getElementById('status')
+const logout = document.getElementById('logout')
+async function refresh() {
+    try {
+        const response = await fetch('../../api/refresh_session', { headers: { 'x-hfs-anti-csrf': '1' } })
+        if (!response.ok) throw Error("Cannot read the HFS session")
+        const session = await response.json()
+        status.textContent = session.username ? "Logged in as " + session.username : "You are not logged in to HFS."
+        logout.hidden = !session.username
+    }
+    catch (error) { status.textContent = error.message }
+}
+logout.onclick = async () => {
+    logout.disabled = true
+    try {
+        const response = await fetch('../../api/logout', { method: 'POST', headers: { 'x-hfs-anti-csrf': '1' } })
+        if (!response.ok && response.status !== 401) throw Error("Logout failed")
+        await refresh()
+    }
+    catch (error) { status.textContent = error.message }
+    finally { logout.disabled = false }
+}
+refresh()
+</script>
+</html>
