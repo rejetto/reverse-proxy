@@ -2,7 +2,7 @@ const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const { createHash, randomBytes } = require('node:crypto')
 const { once } = require('node:events')
-const { mkdtemp, mkdir, cp, writeFile, appendFile, rm } = require('node:fs/promises')
+const { mkdtemp, mkdir, cp, writeFile, readFile, appendFile, rm } = require('node:fs/promises')
 const { gzipSync } = require('node:zlib')
 const http = require('node:http')
 const { tmpdir } = require('node:os')
@@ -124,6 +124,7 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
     await writeFile(join(cwd, 'config.yaml'), JSON.stringify({
         port: 0, listen_interface: '127.0.0.1', https_port: -1,
         open_browser_at_start: false, log: '', error_log: '',
+        roots: { 'root.test': '/doc', 'nested.test': '/doc/nested', '*.wild.test': '//wild/' },
         enable_plugins: ['reverse-proxy'],
         server_code: `exports.init = api => {
             let server, updates = 0
@@ -137,6 +138,15 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
             } }
         }`,
         plugins_config: { 'reverse-proxy': { routes: [
+            { path: '/fresh', host: 'root.test', url: dest },
+            { path: '/doc/legacy', host: 'root.test', url: dest + '/chat-root', rewriteHtml: true },
+            { path: '/doc/doc/repeat', host: 'root.test', url: dest },
+            { path: '/doc', host: 'root.test', url: dest },
+            { path: '/doc/shared', url: dest },
+            { path: '/doc/nested/deep', url: dest },
+            { path: '/documentary', url: dest },
+            { path: '/doc/unrelated', host: 'unrelated.test', url: dest },
+            { path: 'wild/app', host: 'app.wild.test', url: dest },
             { path: '/ws-app', url: wsDest },
             { path: '/ws-slash', url: wsDest + '/' },
             { path: '/site', url: dest },
@@ -171,6 +181,37 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
     }
     assert.ok(proxy, output)
     assert.equal(await fetch(proxy + '/chat/ready').then(r => r.text()), '/chat-root/ready', output)
+    await t.test('domain roots do not alter public proxy paths', async () => {
+        assert.equal(await hostRequest('/fresh/ready?x=1').then(r => r.body), '/ready?x=1')
+        assert.equal(await hostRequest('/legacy/ready').then(r => r.body), '/chat-root/ready')
+        assert.equal(await upgrade('/legacy/ready', false, 'root.test'), '/chat-root/ready')
+        const redirect = await hostRequest('/legacy/redirect?to=/chat-root/login')
+        assert.equal(redirect.headers.location, '/legacy/login')
+        assert.match((await hostRequest('/legacy/html')).body, /src="\/legacy\/app.js"/)
+        assert.equal(await hostRequest('/ready').then(r => r.body), '/ready')
+    })
+    await t.test('existing paths are migrated once and persisted with their marker', async () => {
+        const { config } = await control('get_plugin')
+        assert.equal(config.pathsMigrationDone, true)
+        assert.deepEqual(config.routes.slice(0, 9).map(r => r.path), [
+            '/fresh', '/legacy', '/doc/repeat', '/', '/shared', '/deep',
+            '/documentary', '/doc/unrelated', '/app',
+        ])
+        const routes = [...config.routes, { path: '/doc/new', host: 'root.test', url: dest }]
+        await control('set_plugin', { config: { routes } })
+        await control('stop_plugin')
+        await control('start_plugin')
+        assert.deepEqual((await control('get_plugin')).config.routes, routes)
+        const yaml = require(require.resolve('yaml', { paths: [hfsDir] }))
+        let saved
+        for (let i = 0; i < 50; i++) {
+            saved = yaml.parse(await readFile(join(cwd, 'config.yaml'), 'utf8')).plugins_config['reverse-proxy']
+            if (saved.pathsMigrationDone && saved.routes.length === routes.length) break
+            await delay(100)
+        }
+        assert.equal(saved.pathsMigrationDone, true)
+        assert.deepEqual(saved.routes, routes)
+    })
     await t.test('WebSocket messages reach a root-mounted server through a path prefix', async () => {
         await echo(wsDest + '/socket')
         for (const path of ['/ws-app/socket', '/ws-slash/socket'])
@@ -304,18 +345,28 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
         return fetch(proxy + '/_test/listeners').then(r => r.json())
     }
 
-    async function control(action) {
+    async function control(action, params = {}) {
         const res = await fetch(proxy + '/~/api/' + action, {
             method: 'POST', headers: { 'content-type': 'application/json', 'x-hfs-anti-csrf': '1' },
-            body: JSON.stringify({ id: 'reverse-proxy' }),
+            body: JSON.stringify({ id: 'reverse-proxy', ...params }),
         })
-        assert.equal(res.status, 200, await res.text())
+        const body = await res.text()
+        assert.equal(res.status, 200, body)
+        return JSON.parse(body)
     }
 
-    function upgrade(path, readBody = false) {
+    async function hostRequest(path) {
+        const req = http.get(proxy + path, { headers: { Host: 'root.test' } })
+        const [res] = await once(req, 'response')
+        const chunks = []
+        for await (const chunk of res) chunks.push(chunk)
+        return { headers: res.headers, body: Buffer.concat(chunks).toString() }
+    }
+
+    function upgrade(path, readBody = false, host = 'proxy.test') {
         return new Promise((resolve, reject) => {
             const req = http.get(proxy + path, { headers: {
-                Host: 'proxy.test', Connection: 'Upgrade', Upgrade: 'websocket',
+                Host: host, Connection: 'Upgrade', Upgrade: 'websocket',
                 'Sec-WebSocket-Key': randomBytes(16).toString('base64'), 'Sec-WebSocket-Version': '13',
             } })
             req.on('upgrade', (res, socket, head) => {

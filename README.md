@@ -6,6 +6,23 @@ HFS plugin to proxy configured paths to other servers
 
 HFS ~ HTTP File Server https://github.com/rejetto/hfs
 
+## Domain roots
+
+Source paths refer to the public request URL, before HFS applies a domain root.
+For example, use `/app` even if the domain's HFS root is `/documents`.
+HTTP, WebSocket connections, redirects and HTML/CSS rewriting use this same public path.
+
+On the first start after upgrading to 3.12, existing source paths are migrated automatically:
+`/documents/app` becomes `/app` when `/documents` is a configured domain root.
+For routes with a source host, only that host's effective root is considered.
+Routes without a source host use the longest matching root prefix across all domains.
+Only complete path segments match; `/doc` does not match `/documents`.
+
+The migration assumes matching prefixes were added to compensate for HFS domain roots.
+It saves the converted routes and `pathsMigrationDone: true` under
+`plugins_config` → `reverse-proxy` in HFS's `config.yaml`.
+This internal flag prevents further conversion after restarts or configuration changes.
+
 ## Adapting HTML and CSS URLs to a subpath
 
 Enable **Rewrite HTML/CSS URLs** on an individual route only when the upstream application needs it.

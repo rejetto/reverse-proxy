@@ -14,7 +14,7 @@ test('closes the other side when a WebSocket socket fails', async () => {
     })
     const api = {
         onServer: cb => cb(server),
-        getConfig: key => key === 'routes' ? [{ path: '/ws', url: 'http://upstream' }] : false,
+        getConfig: key => key === 'routes' ? [{ path: '/ws', url: 'http://upstream' }] : key === 'pathsMigrationDone',
         require: name => name === 'net' ? { connect: () => upstream } : require(name),
     }
 
@@ -35,6 +35,7 @@ test('repeated onServer callbacks keep one handler and preserve other listeners'
     const otherHandler = () => {}
     server.on('upgrade', otherHandler)
     const plugin = await require('../dist/plugin.js').init({
+        getConfig: key => key === 'pathsMigrationDone',
         onServer(cb) { cb(server); cb(server) },
     })
     assert.equal(server.listenerCount('upgrade'), 2)

@@ -1,9 +1,10 @@
-exports.version = 3.11
+exports.version = 3.12
 exports.apiRequired = 12.7 // 'onServer' event
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 3.12, "message": "Fix proxy routing with domain roots" },
     { "version": 3.11, "message": "Fix WebSocket connection failures caused by duplicate slashes when joining proxy paths" },
     { "version": 3.1, "message": "Extend opt-in URL rewriting to CSS stylesheets, imports and inline styles" },
     { "version": 3, "message": "Add opt-in HTML URL rewriting for individual proxy routes" },
@@ -33,6 +34,7 @@ exports.config = {
 }
 
 exports.init = async api => {
+    migratePaths()
     // TODO: delegate listener cleanup to api.onServer when apiRequired can be raised to 13.4
     const upgradeHandlers = new Map()
     await api.onServer(handleWebsockets)
@@ -44,16 +46,17 @@ exports.init = async api => {
             upgradeHandlers.clear()
         },
         async middleware(ctx) {
+            const requestPath = ctx.state.originalPath
             for (const route of api.getConfig('routes')) {
                 let { path = '', host, url } = route
                 if (host && ctx.host !== host) continue
                 if (!path.startsWith('/'))
                     path = '/' + path
-                if (!ctx.path.startsWith(path)) continue
-                if (path.length > 1 && ctx.path.length > path.length && ctx.path[path.length] !== '/') continue
+                if (!requestPath.startsWith(path)) continue
+                if (path.length > 1 && requestPath.length > path.length && requestPath[path.length] !== '/') continue
                 if (url.endsWith('/'))
                     url = url.slice(0, -1)
-                const dest = url + ctx.url.slice(path.length === 1 ? 0 : path.length)
+                const dest = url + ctx.originalUrl.slice(path.length === 1 ? 0 : path.length)
                 try {
                     const parsed = api.require('url').parse(dest)
                     const forward = {
@@ -100,6 +103,26 @@ exports.init = async api => {
                 return
             }
         },
+    }
+
+    function migratePaths() {
+        if (api.getConfig('pathsMigrationDone')) return
+        const { makeMatcher } = api.require('./misc')
+        const roots = Object.entries(api.getHfsConfig('roots')).map(([host, path]) => ({
+            matches: makeMatcher(host), path: '/' + path.split('/').filter(Boolean).join('/'),
+        }))
+        const routes = api.getConfig('routes').map(route => {
+            const path = (route.path || '').startsWith('/') ? route.path : '/' + (route.path || '')
+            const candidates = route.host ? roots.filter(root => root.matches(route.host)).slice(0, 1) : roots
+            // ponytail: infer legacy prefixes from configured roots; use explicit mapping if this heuristic becomes insufficient
+            const root = candidates.filter(root => root.path !== '/'
+                && (path === root.path || path.startsWith(root.path + '/')))
+                .sort((a, b) => b.path.length - a.path.length)[0]
+            return root ? { ...route, path: path.slice(root.path.length) || '/' } : route
+        })
+        api.setConfig('routes', routes)
+        // persist even with no roots, so later configuration changes cannot trigger another conversion
+        api.setConfig('pathsMigrationDone', true)
     }
 
     function handleWebsockets(server) {
