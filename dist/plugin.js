@@ -1,9 +1,10 @@
-exports.version = 4
+exports.version = 4.01
 exports.apiRequired = 13.4 // api.onServer cleanup
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 4.01, "message": "Avoid warning `url.parse` in console" },
     { "version": 4, "message": "Protect routes with accounts and groups" },
     { "version": 3.13, "message": "Keep HFS login, APIs and interface assets accessible with catch-all proxy routes" },
     { "version": 3.12, "message": "Fix proxy routing with domain roots" },
@@ -76,7 +77,7 @@ exports.init = async api => {
                     url = url.slice(0, -1)
                 const dest = url + ctx.originalUrl.slice(path.length === 1 ? 0 : path.length)
                 try {
-                    const parsed = api.require('url').parse(dest)
+                    const parsed = new URL(dest)
                     const forward = {
                         url: dest,
                         method: ctx.method,
