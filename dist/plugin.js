@@ -1,9 +1,10 @@
-exports.version = 4.02
+exports.version = 4.1
 exports.apiRequired = 13.4 // api.onServer cleanup
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 4.1, "message": "Toggle to enable or disable individual routes" },
     { "version": 4.02, "message": "Fix HEAD requests" },
     { "version": 4.01, "message": "Avoid warning `url.parse` in console" },
     { "version": 4, "message": "Protect routes with accounts and groups" },
@@ -28,6 +29,9 @@ exports.config = {
         helperText: "First rule matching applies (top to bottom)",
         type: 'array', reorder: true, defaultValue: [], width: { xs: 'auto', sm: 600, md: 800 },
         fields: {
+            // missing on routes saved by older versions, which must stay active
+            enabled: { type: 'boolean', defaultValue: true, label: "Enabled", $width: .3, $column: { headerName: "On" },
+                helperText: "Disabled routes are ignored, as if they were not in the list" },
             path: { label: 'Source path', $width: 1, placeholder: '/website', $mergeRender: { host: {} } },
             host: { label: 'Source host', $width: 1, placeholder: "leave empty for any", $hideUnder: true },
             url: { label: 'Destination URL', $width: 2, placeholder: 'http://example.com' },
@@ -55,6 +59,7 @@ exports.init = async api => {
             // HFS needs its internal URLs for login, APIs and interface assets even with a catch-all route
             if (requestPath.startsWith('/~/')) return
             for (const route of api.getConfig('routes')) {
+                if (route.enabled === false) continue
                 let { path = '', host, url } = route
                 if (host && ctx.host !== host) continue
                 if (!path.startsWith('/'))
@@ -175,6 +180,7 @@ exports.init = async api => {
                 return
             }
             for (const route of api.getConfig('routes')) {
+                if (route.enabled === false) continue
                 let { path = '', host, url } = route
                 if (host && req.headers.host !== host) continue
                 if (!path.startsWith('/'))
