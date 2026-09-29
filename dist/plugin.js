@@ -4,7 +4,7 @@ exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
-    { "version": 4.02, "message": "Forward HEAD requests as HEAD" },
+    { "version": 4.02, "message": "Fix HEAD requests" },
     { "version": 4.01, "message": "Avoid warning `url.parse` in console" },
     { "version": 4, "message": "Protect routes with accounts and groups" },
     { "version": 3.13, "message": "Keep HFS login, APIs and interface assets accessible with catch-all proxy routes" },
