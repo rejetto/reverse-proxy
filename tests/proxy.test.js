@@ -78,6 +78,15 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
             for await (const chunk of req) chunks.push(chunk)
             res.end(JSON.stringify({ method: req.method, body: Buffer.concat(chunks).toString() }))
         }
+        else if (url.pathname.endsWith('/method')) {
+            const chunks = []
+            for await (const chunk of req) chunks.push(chunk)
+            const body = JSON.stringify({ method: req.method, url: req.url, body: Buffer.concat(chunks).toString() })
+            res.setHeader('content-type', 'application/json')
+            res.setHeader('content-length', Buffer.byteLength(body))
+            res.setHeader('x-upstream-method', req.method)
+            res.end(body)
+        }
         else
             res.end(req.url)
     })
@@ -452,6 +461,25 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
             }), { method: 'POST', body: 'message to preserve', headers: { 'content-type': 'text/plain' } })
             assert.deepEqual(await response.json(), { method: 'POST', body: 'message to preserve' })
         }
+    })
+
+    await t.test('all HTTP methods are forwarded to upstream', async () => {
+        for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'PROPFIND', 'PROPPATCH', 'MKCOL',
+            'COPY', 'MOVE', 'LOCK', 'UNLOCK', 'REPORT', 'SEARCH', 'PURGE']) {
+            const body = ['GET', 'OPTIONS'].includes(method) ? undefined : 'payload ' + method
+            const res = await fetch(proxy + '/chat/method?q=1', { method, body })
+            assert.equal(res.status, 200, method)
+            assert.equal(res.headers.get('x-upstream-method'), method)
+            assert.deepEqual(await res.json(), { method, url: '/chat-root/method?q=1', body: body || '' }, method)
+        }
+        const res = await fetch(proxy + '/chat/method?q=1', { method: 'HEAD' })
+        assert.equal(res.status, 200)
+        assert.equal(res.headers.get('x-upstream-method'), 'HEAD')
+        assert.equal(res.headers.get('content-type'), 'application/json')
+        assert.equal(await res.text(), '')
+        const adapted = await fetch(proxy + '/adapted/html', { method: 'HEAD' })
+        assert.equal(adapted.status, 200)
+        assert.equal(await adapted.text(), '')
     })
 
     function probe() {

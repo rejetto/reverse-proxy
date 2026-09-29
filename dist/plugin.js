@@ -1,9 +1,10 @@
-exports.version = 4.01
+exports.version = 4.02
 exports.apiRequired = 13.4 // api.onServer cleanup
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 4.02, "message": "Forward HEAD requests as HEAD" },
     { "version": 4.01, "message": "Avoid warning `url.parse` in console" },
     { "version": 4, "message": "Protect routes with accounts and groups" },
     { "version": 3.13, "message": "Keep HFS login, APIs and interface assets accessible with catch-all proxy routes" },
@@ -45,6 +46,8 @@ exports.init = async api => {
     migratePaths()
     const upgradeServers = new Set()
     let serveLogin
+    // HFS turns HEAD into GET before plugins run, so remember the original method to forward it faithfully
+    const headRequests = new WeakSet()
     await api.onServer(handleWebsockets)
     return {
         async middleware(ctx) {
@@ -78,9 +81,10 @@ exports.init = async api => {
                 const dest = url + ctx.originalUrl.slice(path.length === 1 ? 0 : path.length)
                 try {
                     const parsed = new URL(dest)
+                    const method = headRequests.has(ctx.req) ? 'HEAD' : ctx.method
                     const forward = {
                         url: dest,
-                        method: ctx.method,
+                        method,
                         headers: {
                             ...ctx.headers,
                             host: parsed.host,
@@ -88,7 +92,7 @@ exports.init = async api => {
                             'X-Forwarded-Proto': ctx.protocol,
                             'X-Forwarded-Host': ctx.host,
                         },
-                        body: ctx.req,
+                        body: method === 'HEAD' ? undefined : ctx.req,
                         httpThrow: false,
                         rejectUnauthorized: api.getConfig('rejectUnauthorized'),
                         noRedirect: true, // redirect must be handled differently
@@ -110,7 +114,7 @@ exports.init = async api => {
                             req.headers.location = (path.replace(/\/$/, '') + target.pathname.slice(basePath.length) || '/')
                                 + target.search + target.hash
                     }
-                    const body = route.rewriteHtml && ctx.method !== 'HEAD'
+                    const body = route.rewriteHtml && method !== 'HEAD'
                         ? await require('./rewrite-html')(req, path, route.url) : req
                     ctx.status = req.statusCode
                     ctx.set(req.headers)
@@ -259,10 +263,17 @@ exports.init = async api => {
             }
             clientSocket.destroy() // no route found
         }
+        const trackHead = req => {
+            if (req.method === 'HEAD')
+                headRequests.add(req)
+        }
         upgradeServers.add(server)
         server.on('upgrade', handler)
+        // run before HFS's own listener, which starts the middleware chain
+        server.prependListener('request', trackHead)
         return () => {
             server.removeListener('upgrade', handler)
+            server.removeListener('request', trackHead)
             upgradeServers.delete(server)
         }
     }
