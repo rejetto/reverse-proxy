@@ -159,6 +159,10 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
             { path: '/protected-ws', url: wsDest, accounts: ['proxy-users'] },
             { path: '/ws-app', url: wsDest },
             { path: '/ws-slash', url: wsDest + '/' },
+            { path: '/disabled', url: dest + '/wrong', enabled: false },
+            { path: '/disabled', url: dest + '/enabled' },
+            { path: '/disabled-ws', url: dest, enabled: false },
+            { path: '/disabled-ws', url: wsDest },
             { path: '/site', url: dest },
             { path: '/adapted', url: dest + '/chat-root', rewriteHtml: true },
             { path: '/chat', host: 'other.test', url: dest + '/wrong-host' },
@@ -325,9 +329,13 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
         assert.equal(saved.pathsMigrationDone, true)
         assert.deepEqual(saved.routes, routes)
     })
+    await t.test('disabled routes are skipped while older routes remain active', async () => {
+        assert.equal(await fetch(proxy + '/disabled/ready').then(r => r.text()), '/enabled/ready')
+        assert.equal(await fetch(proxy + '/chat/ready').then(r => r.text()), '/chat-root/ready')
+    })
     await t.test('WebSocket messages reach a root-mounted server through a path prefix', async () => {
         await echo(wsDest + '/socket')
-        for (const path of ['/ws-app/socket', '/ws-slash/socket'])
+        for (const path of ['/ws-app/socket', '/ws-slash/socket', '/disabled-ws/socket'])
             await echo(proxy + path)
 
         async function echo(url) {
