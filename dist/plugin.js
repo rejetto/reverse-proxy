@@ -1,9 +1,10 @@
-exports.version = 4.1
+exports.version = 4.11
 exports.apiRequired = 13.4 // api.onServer cleanup
 exports.description = "With this plugin HFS becomes a proxy server"
 exports.repo = "rejetto/reverse-proxy"
 exports.preview = ["https://github.com/user-attachments/assets/9ab88fdc-bdab-43b5-8bab-bba1c6f6e396"]
 exports.changelog = [
+    { "version": 4.11, "message": "Fix: Handle HEAD requests on protected routes" },
     { "version": 4.1, "message": "Toggle to enable or disable individual routes" },
     { "version": 4.01, "message": "Avoid warning `url.parse` in console" },
     { "version": 4, "message": "Protect routes with accounts and groups" },
@@ -68,7 +69,7 @@ exports.init = async api => {
                     ctx.status = denied
                     ctx.body = denied === 401 ? "Unauthorized" : "Forbidden"
                     ctx.set('Cache-Control', 'no-store')
-                    if (ctx.method === 'GET' && ctx.get('accept').includes('text/html')) {
+                    if (['GET', 'HEAD'].includes(ctx.method) && ctx.get('accept').includes('text/html')) {
                         serveLogin ||= api.require('./serveGuiFiles').serveGuiFiles(undefined, '/~/frontend/')
                         ctx.state.serveApp = true
                         await serveLogin(ctx)

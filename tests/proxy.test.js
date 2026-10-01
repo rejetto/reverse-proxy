@@ -200,6 +200,10 @@ border-image: url(//example.com/image.png); list-style: url(data:image/png;base6
         assert.equal(denied.status, 401)
         const loginPage = await fetch(proxy + '/protected/ready', { headers: { accept: 'text/html' } })
         assert.equal(loginPage.status, 401)
+        const loginHead = await fetch(proxy + '/protected/ready', { method: 'HEAD', headers: { accept: 'text/html' } })
+        assert.equal(loginHead.status, 401)
+        assert.equal(loginHead.headers.get('content-type'), loginPage.headers.get('content-type'))
+        assert.equal(await loginHead.text(), '')
         assert.match(await loginPage.text(), /name="hfs-proxy-login"/)
         assert.equal((await fetch(proxy + '/protected/ready', { method: 'POST', body: 'must not reach upstream' })).status, 401)
         assert.equal((await fetch(proxy + '/protected/ready', {
